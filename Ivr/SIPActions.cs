@@ -4,6 +4,7 @@ using SIPSorcery.Media;
 using virtual_call_center.Models;
 using virtual_call_center.Services;
 using System.Collections.Concurrent;
+using SIPSorceryMedia.Abstractions;
 using ConfigManager = virtual_call_center.Services.ConfigurationManager;
 
 namespace virtual_call_center.Ivr;
@@ -69,8 +70,16 @@ public class SIPActions
         {
             var userAgentServer = userAgent.AcceptCall(sipRequest);
             
-            // Simplified media session setup for SIPSorcery
-            await userAgent.Answer(userAgentServer, null);
+            var mediaSession = new VoIPMediaSession(new MediaEndPoints());
+            
+            if (mediaSession.AudioExtrasSource != null)
+            {
+                mediaSession.AudioExtrasSource.OnAudioSourceEncodedSample += (uint durationRtpUnits, byte[] sample) => 
+                    OnAudioReceived(session, sample);
+            }
+            
+            await userAgent.Answer(userAgentServer, mediaSession);
+            session.MediaSession = mediaSession;
             session.State = CallState.Connected;
 
             _logger.LogInformation("Call {CallId} answered successfully", callId);
