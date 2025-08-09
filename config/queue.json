@@ -1,0 +1,21 @@
+﻿{
+  "queues": [
+    {
+      "action": 2000,
+      "holdRecording": "cisco.wav",
+      "timeoutSeconds": 0,
+      "timeoutAction": 0,
+      "announceTime": 180,
+      "announceRecording": "anounce.wav"
+    },
+    {
+      "action": 2001,
+      "holdRecording": "cisco.wav",
+      "timeoutSeconds": 1800,
+      "timeoutAction": 1000,
+      "announceTime": 180,
+      "announceRecording": "announce.wav"
+    }
+  ]
+}
+

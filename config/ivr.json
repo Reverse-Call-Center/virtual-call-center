@@ -1,0 +1,49 @@
+﻿{
+  "nodes": [
+    {
+      "action": 1000,
+      "promptRecording": "ivr_1000.wav",
+      "timeoutSeconds": 30,
+      "timeoutRecording": "goodbye.wav",
+      "timeoutAction": 0,
+      "invalidRecording": "ivr_invalid_option.wav",
+      "options": [
+        {
+          "key": 1,
+          "nextAction": 2000
+        },
+        {
+          "key": 2,
+          "nextAction": 2001
+        },
+        {
+          "key": 9,
+          "nextAction": 1001
+        },
+        {
+          "key": 0,
+          "nextAction": 5000
+        }
+      ]
+    },
+    {
+      "action": 1001,
+      "promptRecording": "directory.wav",
+      "timeoutSeconds": 15,
+      "timeoutRecording": "timeout.wav",
+      "timeoutAction": 1000,
+      "invalidRecording": "invalid_option.wav",
+      "options": [
+        {
+          "key": 1,
+          "nextAction": 5001
+        },
+        {
+          "key": 2,
+          "nextAction": 5002
+        }
+      ]
+    }
+  ]
+}
+

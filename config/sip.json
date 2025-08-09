@@ -1,0 +1,13 @@
+﻿{
+  "port": 5080,
+  "bindAddress": "0.0.0.0",
+  "initialCallAction": 1000,
+  "enableRecording": true,
+  "recordDisclaimerFile": "disclaimer.wav",
+  "maxConcurrentCalls": 100,
+  "callTimeoutSeconds": 1800,
+  "blacklistedNumbers": [],
+  "enableLogging": true,
+  "logLevel": "Information"
+}
+
