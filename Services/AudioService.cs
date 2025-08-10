@@ -153,16 +153,19 @@ public class AudioService
         if (session.MediaSession == null)
             return;
 
-        const int frameSize = 320; // 20ms at 8kHz, 16-bit mono
+        // Convert PCM to μ-law for SIP transmission
+        var muLawData = ConvertToMuLaw(audioData);
+        const int frameSize = 160; // 20ms at 8kHz μ-law (160 bytes = 20ms)
         
-        for (int offset = 0; offset < audioData.Length; offset += frameSize)
+        for (int offset = 0; offset < muLawData.Length; offset += frameSize)
         {
-            var frameLength = Math.Min(frameSize, audioData.Length - offset);
+            var frameLength = Math.Min(frameSize, muLawData.Length - offset);
             var frame = new byte[frameLength];
-            Array.Copy(audioData, offset, frame, 0, frameLength);
+            Array.Copy(muLawData, offset, frame, 0, frameLength);
             
+            // Send μ-law encoded audio frame
             session.MediaSession.SendAudio(20, frame);
-            await Task.Delay(20);
+            await Task.Delay(20); // 20ms frame timing
         }
     }
 

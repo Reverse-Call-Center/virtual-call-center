@@ -119,7 +119,6 @@ public class SIPActions
             var mediaEndPoints = new MediaEndPoints();
             var mediaSession = new VoIPMediaSession(mediaEndPoints);
             
-            // Set up audio capabilities
             if (mediaSession.AudioLocalTrack != null)
             {
                 mediaSession.AudioLocalTrack.Capabilities.Clear();
@@ -127,7 +126,6 @@ public class SIPActions
                     new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.PCMU));
             }
 
-            // Set up audio event handlers
             if (mediaSession.AudioExtrasSource != null)
             {
                 mediaSession.AudioExtrasSource.OnAudioSourceEncodedSample += (uint durationRtpUnits, byte[] sample) => 
