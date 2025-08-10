@@ -223,7 +223,18 @@ public class CallRouter
 
     private async Task<int> WaitForDtmf(CallSession session)
     {
-        return await Task.FromResult(0);
+        // Create a TaskCompletionSource to wait for DTMF input
+        var tcs = new TaskCompletionSource<int>();
+        session.DtmfTaskCompletionSource = tcs;
+        
+        try
+        {
+            return await tcs.Task;
+        }
+        finally
+        {
+            session.DtmfTaskCompletionSource = null;
+        }
     }
 
     private async Task<DynamicAgent?> WaitForAgentAvailable(CallSession session)

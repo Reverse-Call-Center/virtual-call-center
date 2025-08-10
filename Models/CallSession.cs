@@ -22,6 +22,7 @@ public class CallSession
     public ConcurrentQueue<byte[]> AudioBuffer { get; set; } = new ConcurrentQueue<byte[]>();
     public bool IsOnHold { get; set; } = false;
     public DateTime LastActivity { get; set; } = DateTime.UtcNow;
+    public TaskCompletionSource<int>? DtmfTaskCompletionSource { get; set; }
 }
 
 public enum CallState

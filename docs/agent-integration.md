@@ -1,270 +1,179 @@
 ﻿# gRPC Agent Integration Guide
 
-This document explains how to integrate Discord bot agents (or any client) with the Virtual Call Center using gRPC.
+This document explains how to integrate agents into the Virtual Call Center using gRPC.
 
 ## Overview
 
-Agents connect to the call center via gRPC to handle incoming calls. Each agent can handle one call at a time and communicates using PCM audio frames at 20ms intervals.
+The Virtual Call Center uses gRPC for real-time communication with external agents. Each agent connects via gRPC and can handle one call at a time. Agents are automatically discovered when they connect and removed when they disconnect.
 
-## Agent ID Range
+## Agent Connection Flow
 
-- **Agent IDs**: 5000-5999
-- Each agent must use a unique ID within this range
-- The system will automatically route calls to available agents
+1. **Connect to gRPC Server**: Agents connect to the call center's gRPC server
+2. **Register Stream**: Establish a bidirectional stream for real-time communication
+3. **Automatic Registration**: Agent is automatically registered when stream is established
+4. **Call Assignment**: System assigns calls to available agents
+5. **Real-time Audio**: Bidirectional audio streaming during calls
+6. **Cleanup**: Agent is automatically removed when connection closes
 
 ## gRPC Service Definition
 
-The agent service is defined in `Protos/agent.proto` and provides the following methods:
-
-### 1. RegisterAgent
-Register your agent with the call center.
-
 ```protobuf
-rpc RegisterAgent(AgentRegistration) returns (AgentResponse);
-```
+service AgentService {
+  rpc ConnectAgent(stream AgentMessage) returns (stream CallCenterMessage);
+}
 
-**Request:**
-```protobuf
-message AgentRegistration {
-  int32 agent_id = 1;           // Unique ID (5000-5999)
-  string agent_name = 2;        // Display name for your agent
-  int32 max_concurrent_calls = 3; // Always set to 1
+message AgentMessage {
+  oneof message_type {
+    AgentRegistration registration = 1;
+    AudioData audio = 2;
+    CallResponse response = 3;
+    AgentStatus status = 4;
+  }
+}
+
+message CallCenterMessage {
+  oneof message_type {
+    CallAssignment assignment = 1;
+    AudioData audio = 2;
+    CallEnd end = 3;
+    SystemMessage system = 4;
+  }
 }
 ```
 
-### 2. SendHeartbeat
-Maintain connection and receive pending call assignments.
+## Agent Implementation
 
-```protobuf
-rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-```
-
-**Request:**
-```protobuf
-message HeartbeatRequest {
-  int32 agent_id = 1;      // Your agent ID
-  bool is_available = 2;   // Whether you can accept calls
-}
-```
-
-**Response:**
-```protobuf
-message HeartbeatResponse {
-  bool success = 1;
-  repeated CallAssignment pending_calls = 2; // Calls waiting for you
-}
-```
-
-### 3. Audio Streaming (Bidirectional)
-
-#### Receive Audio from Calls
-```protobuf
-rpc ReceiveAudio(ReceiveAudioRequest) returns (stream AudioFrame);
-```
-
-#### Send Audio to Calls
-```protobuf
-rpc SendAudio(AudioFrame) returns (AudioResponse);
-```
-
-**Audio Frame Format:**
-```protobuf
-message AudioFrame {
-  string call_id = 1;        // Call identifier
-  int32 agent_id = 2;        // Your agent ID
-  bytes pcm_data = 3;        // PCM audio data (320 bytes = 20ms)
-  int64 timestamp = 4;       // Unix timestamp in milliseconds
-  int32 sequence_number = 5; // Frame sequence number
-}
-```
-
-### 4. Call Management
-
-#### Accept a Call
-```protobuf
-rpc AcceptCall(AcceptCallRequest) returns (AcceptCallResponse);
-```
-
-#### End a Call
-```protobuf
-rpc EndCall(EndCallRequest) returns (EndCallResponse);
-```
-
-## Integration Steps
-
-### 1. Connect to gRPC Server
-
-Connect to the call center gRPC server (default: `localhost:5000`):
+### 1. Initial Connection
 
 ```csharp
-// C# Example
-var channel = GrpcChannel.ForAddress("https://localhost:5001");
+var channel = GrpcChannel.ForAddress("http://localhost:5432");
 var client = new AgentService.AgentServiceClient(channel);
+
+using var call = client.ConnectAgent();
 ```
 
-### 2. Register Your Agent
+### 2. Agent Registration
+
+Send registration message immediately after connecting:
 
 ```csharp
-var registration = new AgentRegistration
-{
-    AgentId = 5001,  // Choose unique ID between 5000-5999
-    AgentName = "Discord Bot Agent",
-    MaxConcurrentCalls = 1  // Always 1
-};
-
-var response = await client.RegisterAgentAsync(registration);
-```
-
-### 3. Start Heartbeat Loop
-
-Send heartbeats every 5-10 seconds to maintain connection:
-
-```csharp
-while (isRunning)
-{
-    var heartbeat = new HeartbeatRequest
-    {
-        AgentId = 5001,
-        IsAvailable = true  // Set false when busy
-    };
-    
-    var response = await client.SendHeartbeatAsync(heartbeat);
-    
-    // Check for pending calls
-    foreach (var call in response.PendingCalls)
-    {
-        await HandleIncomingCall(call);
+await call.RequestStream.WriteAsync(new AgentMessage {
+    Registration = new AgentRegistration {
+        AgentId = uniqueAgentId,  // System will assign if not provided
+        DisplayName = "Agent Smith",
+        Capabilities = { "voice", "chat" }
     }
-    
-    await Task.Delay(5000); // 5 second interval
-}
+});
 ```
 
-### 4. Handle Incoming Calls
-
-When you receive a call assignment:
+### 3. Handle Incoming Messages
 
 ```csharp
-private async Task HandleIncomingCall(CallAssignment call)
+await foreach (var message in call.ResponseStream.ReadAllAsync())
 {
-    // Accept the call
-    var acceptRequest = new AcceptCallRequest
+    switch (message.MessageTypeCase)
     {
-        AgentId = 5001,
-        CallId = call.CallId
-    };
-    
-    await client.AcceptCallAsync(acceptRequest);
-    
-    // Start audio streaming
-    await StartAudioStreaming(call.CallId);
+        case CallCenterMessage.MessageTypeOneofCase.Assignment:
+            HandleCallAssignment(message.Assignment);
+            break;
+        case CallCenterMessage.MessageTypeOneofCase.Audio:
+            PlayAudioToAgent(message.Audio);
+            break;
+        case CallCenterMessage.MessageTypeOneofCase.End:
+            HandleCallEnd(message.End);
+            break;
+    }
 }
 ```
 
-### 5. Audio Streaming
-
-#### Receiving Audio from Caller
+### 4. Send Audio Data
 
 ```csharp
-var audioRequest = new ReceiveAudioRequest
-{
-    AgentId = 5001,
-    CallId = callId
-};
-
-using var audioStream = client.ReceiveAudio(audioRequest);
-
-await foreach (var frame in audioStream.ResponseStream.ReadAllAsync())
-{
-    // Process incoming PCM audio (320 bytes = 20ms at 8kHz, 16-bit mono)
-    ProcessIncomingAudio(frame.PcmData.ToByteArray());
-}
+await call.RequestStream.WriteAsync(new AgentMessage {
+    Audio = new AudioData {
+        CallId = currentCallId,
+        Data = ByteString.CopyFrom(audioBytes),
+        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+    }
+});
 ```
 
-#### Sending Audio to Caller
+## Dynamic Agent Management
 
-```csharp
-private async Task SendAudioFrame(string callId, byte[] pcmData, int sequenceNumber)
-{
-    var audioFrame = new AudioFrame
-    {
-        CallId = callId,
-        AgentId = 5001,
-        PcmData = Google.Protobuf.ByteString.CopyFrom(pcmData),
-        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        SequenceNumber = sequenceNumber
-    };
-    
-    await client.SendAudioAsync(audioFrame);
-}
-```
+Agents are managed dynamically:
 
-### 6. End Call
+- **Online Detection**: Agent is online when gRPC connection is active
+- **Automatic Registration**: No manual configuration needed
+- **Load Balancing**: Calls distributed to available agents
+- **Fault Tolerance**: Disconnected agents automatically removed
 
-When the call is finished:
+## Call Flow
 
-```csharp
-var endRequest = new EndCallRequest
-{
-    AgentId = 5001,
-    CallId = callId,
-    Reason = "Call completed"
-};
+1. **Call Assignment**: System sends `CallAssignment` message to available agent
+2. **Audio Stream**: Bidirectional audio streaming begins
+3. **Call Control**: Agent can accept, reject, hold, or transfer calls
+4. **Call End**: System sends `CallEnd` message when call terminates
 
-await client.EndCallAsync(endRequest);
-```
+## Agent States
 
-## Audio Format Requirements
-
-- **Sample Rate**: 8000 Hz
-- **Bit Depth**: 16-bit
-- **Channels**: Mono (1 channel)
-- **Frame Size**: 320 bytes (20ms of audio)
-- **Format**: PCM (signed 16-bit little-endian)
-
-## Discord Bot Integration
-
-For Discord bots, you'll need to:
-
-1. Convert Discord's Opus audio to PCM
-2. Resample to 8kHz if needed
-3. Convert stereo to mono if needed
-4. Send 20ms frames (320 bytes each)
+- **Available**: Ready to receive calls (no active calls)
+- **Busy**: Currently handling a call
+- **Offline**: Not connected or connection lost
 
 ## Error Handling
 
-- **Connection Loss**: Implement reconnection logic with exponential backoff
-- **Call Timeout**: End calls if no audio received for 30+ seconds
-- **Audio Buffer**: Implement buffering for smooth audio playback
-- **Heartbeat Failure**: Reconnect if heartbeats fail
+- **Connection Loss**: Agent automatically marked offline
+- **Call Failure**: Call reassigned to another agent if available
+- **Audio Issues**: System logs errors and continues
 
-## Example Implementation
+## Security Considerations
 
-See the `examples/` directory for complete Discord bot integration examples in various languages.
+- Use TLS for production deployments
+- Implement authentication tokens in `AgentRegistration`
+- Validate agent permissions before call assignment
 
-## Troubleshooting
+## Example Agent Implementation
 
-### Common Issues
+```csharp
+public class CallCenterAgent
+{
+    private readonly AgentService.AgentServiceClient _client;
+    private AsyncDuplexStreamingCall<AgentMessage, CallCenterMessage> _stream;
+    
+    public async Task ConnectAsync()
+    {
+        _stream = _client.ConnectAgent();
+        
+        // Register agent
+        await _stream.RequestStream.WriteAsync(new AgentMessage {
+            Registration = new AgentRegistration {
+                DisplayName = "My Agent"
+            }
+        });
+        
+        // Handle incoming messages
+        _ = Task.Run(HandleMessages);
+    }
+    
+    private async Task HandleMessages()
+    {
+        await foreach (var message in _stream.ResponseStream.ReadAllAsync())
+        {
+            // Process messages...
+        }
+    }
+}
+```
 
-1. **Agent Not Receiving Calls**
-   - Ensure heartbeats are being sent regularly
-   - Check that `is_available = true` in heartbeat
-   - Verify agent ID is in range 5000-5999
+## Configuration
 
-2. **Audio Quality Issues**
-   - Verify PCM format (8kHz, 16-bit, mono)
-   - Check frame timing (exactly 20ms = 320 bytes)
-   - Implement proper buffering
+No static agent configuration is required. Agents self-register when connecting and are automatically removed when disconnecting.
 
-3. **Connection Problems**
-   - Check gRPC server address and port
-   - Verify SSL/TLS configuration
-   - Implement proper error handling and reconnection
+## Monitoring
 
-### Logs
+- Agent connections logged in real-time
+- Call assignments and completions tracked
+- Audio quality metrics available
+- Connection health monitored
 
-Enable detailed logging in your agent to debug issues:
-- Connection events
-- Audio frame statistics
-- Call state changes
-- Error conditions
+For more details, see the `AgentGrpcService.cs` and `DynamicAgentManager.cs` files in the source code.

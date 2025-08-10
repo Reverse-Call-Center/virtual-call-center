@@ -1,9 +1,9 @@
 ﻿using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
 using SIPSorcery.Media;
+using SIPSorcery.Net;
 using virtual_call_center.Models;
 using virtual_call_center.Services;
-using System.Collections.Concurrent;
 using SIPSorceryMedia.Abstractions;
 using ConfigManager = virtual_call_center.Services.ConfigurationManager;
 
@@ -34,6 +34,9 @@ public class SIPActions
         _logger.LogInformation("SIPActions initialized at {Timestamp}", DateTime.UtcNow);
     }
     
+    /// <summary>
+    /// Handles incoming SIP calls, sets up media session and starts call processing
+    /// </summary>
     public async Task OnIncomingCall(SIPUserAgent userAgent, SIPRequest sipRequest)
     {
         var callerNumber = sipRequest.Header.From.FromURI.User;
@@ -69,13 +72,20 @@ public class SIPActions
         try
         {
             var userAgentServer = userAgent.AcceptCall(sipRequest);
-            
-            var mediaSession = new VoIPMediaSession(new MediaEndPoints());
-            
-            if (mediaSession.AudioExtrasSource != null)
+            if (userAgentServer == null)
             {
-                mediaSession.AudioExtrasSource.OnAudioSourceEncodedSample += (uint durationRtpUnits, byte[] sample) => 
-                    OnAudioReceived(session, sample);
+                _logger.LogError("Failed to accept call for {CallerNumber}", callerNumber);
+                _sessionManager.RemoveCallSession(callId);
+                return;
+            }
+            
+            var mediaSession = CreateMediaSession(session);
+            if (mediaSession == null)
+            {
+                _logger.LogError("Failed to create media session for {CallerNumber}", callerNumber);
+                userAgent.Cancel();
+                _sessionManager.RemoveCallSession(callId);
+                return;
             }
             
             await userAgent.Answer(userAgentServer, mediaSession);
@@ -95,6 +105,41 @@ public class SIPActions
         {
             _logger.LogError(ex, "Error handling incoming call {CallId}", callId);
             _sessionManager.RemoveCallSession(callId);
+            userAgent?.Hangup();
+        }
+    }
+
+    /// <summary>
+    /// Creates and configures the media session for the call
+    /// </summary>
+    private VoIPMediaSession? CreateMediaSession(CallSession session)
+    {
+        try
+        {
+            var mediaEndPoints = new MediaEndPoints();
+            var mediaSession = new VoIPMediaSession(mediaEndPoints);
+            
+            // Set up audio capabilities
+            if (mediaSession.AudioLocalTrack != null)
+            {
+                mediaSession.AudioLocalTrack.Capabilities.Clear();
+                mediaSession.AudioLocalTrack.Capabilities.Add(
+                    new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.PCMU));
+            }
+
+            // Set up audio event handlers
+            if (mediaSession.AudioExtrasSource != null)
+            {
+                mediaSession.AudioExtrasSource.OnAudioSourceEncodedSample += (uint durationRtpUnits, byte[] sample) => 
+                    OnAudioReceived(session, sample);
+            }
+            
+            return mediaSession;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating media session for call {CallId}", session.CallId);
+            return null;
         }
     }
 
@@ -151,11 +196,20 @@ public class SIPActions
                     pcmData, timestamp, 0);
             }
 
-            var dtmf = DetectDTMF(audioSample);
-            if (dtmf.HasValue)
+            // Only detect DTMF when in IVR state to avoid false positives
+            if (session.State == CallState.InIVR)
             {
-                _logger.LogInformation("DTMF {Key} detected for call {CallId}", dtmf.Value, session.CallId);
-                _ = Task.Run(async () => await _callRouter.RouteCall(session, dtmf.Value));
+                var dtmf = DetectDTMF(audioSample);
+                if (dtmf.HasValue)
+                {
+                    _logger.LogInformation("DTMF {Key} detected for call {CallId}", dtmf.Value, session.CallId);
+                    
+                    // Complete the DTMF task if waiting for input
+                    if (session.DtmfTaskCompletionSource != null && !session.DtmfTaskCompletionSource.Task.IsCompleted)
+                    {
+                        session.DtmfTaskCompletionSource.SetResult(dtmf.Value);
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -169,6 +223,9 @@ public class SIPActions
         return _dtmfDetector.DetectDTMF(audioSample);
     }
 
+    /// <summary>
+    /// Ends the call and cleans up resources
+    /// </summary>
     private async Task EndCall(CallSession session)
     {
         _logger.LogInformation("Ending call {CallId}", session.CallId);
