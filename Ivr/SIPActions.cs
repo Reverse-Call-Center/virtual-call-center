@@ -122,8 +122,18 @@ public class SIPActions
             if (mediaSession.AudioLocalTrack != null)
             {
                 mediaSession.AudioLocalTrack.Capabilities.Clear();
+                
                 mediaSession.AudioLocalTrack.Capabilities.Add(
                     new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.PCMU));
+                
+                mediaSession.AudioLocalTrack.Capabilities.Add(
+                    new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.PCMA));
+                
+                mediaSession.AudioLocalTrack.Capabilities.Add(
+                    new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.G722));
+                
+                mediaSession.AudioLocalTrack.Capabilities.Add(
+                    new SDPAudioVideoMediaFormat(SDPWellKnownMediaFormatsEnum.G729));
             }
 
             if (mediaSession.AudioExtrasSource != null)
@@ -194,7 +204,6 @@ public class SIPActions
                     pcmData, timestamp, 0);
             }
 
-            // Only detect DTMF when in IVR state to avoid false positives
             if (session.State == CallState.InIVR)
             {
                 var dtmf = DetectDTMF(audioSample);
@@ -202,7 +211,6 @@ public class SIPActions
                 {
                     _logger.LogInformation("DTMF {Key} detected for call {CallId}", dtmf.Value, session.CallId);
                     
-                    // Complete the DTMF task if waiting for input
                     if (session.DtmfTaskCompletionSource != null && !session.DtmfTaskCompletionSource.Task.IsCompleted)
                     {
                         session.DtmfTaskCompletionSource.SetResult(dtmf.Value);
