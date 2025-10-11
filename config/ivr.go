@@ -25,7 +25,6 @@ type Option struct {
 	OptionAction int `json:"option_action"`
 }
 
-// LoadIvrConfig loads all the IVR configurations from the JSON file
 func LoadIvrConfig() (*IvrConfig, error) {
 	file, err := os.Open("./configs/ivr.json")
 	if err != nil {

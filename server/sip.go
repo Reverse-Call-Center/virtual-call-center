@@ -48,14 +48,19 @@ func HandleIncomingCall(parentCtx context.Context, inDialog *diago.DialogServerS
 	callerID := utils.ExtractCallerPhone(inDialog.InviteRequest.Headers())
 
 	callSession := &types.CallSession{
-		ID:        utils.GenerateCallID(),
-		CallerID:  callerID,
-		Dialog:    inDialog,
-		State:     types.StateConnecting,
-		IVRLevel:  globalConfig.InitialOptionId,
-		StartTime: time.Now(),
-		Context:   callCtx,
-		Cancel:    cancel,
+		ID:              utils.GenerateCallID(),
+		CallerID:        callerID,
+		Dialog:          inDialog,
+		State:           types.StateConnecting,
+		IVRLevel:        globalConfig.InitialOptionId,
+		StartTime:       time.Now(),
+		Context:         callCtx,
+		Cancel:          cancel,
+		RTPSendPort:     globalConfig.RTPInitialPort,
+		RTPRecvPort:     globalConfig.RTPInitialPort + 1,
+		AgentAvailable:  make(chan struct{}),
+		AgentAudioChan:  make(chan []byte, 100),
+		CallerAudioChan: make(chan []byte, 100),
 	}
 
 	session.RegisterCall(callSession)

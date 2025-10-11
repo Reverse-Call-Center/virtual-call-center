@@ -20,7 +20,6 @@ type Queue struct {
 	AnnounceMessage string `json:"announce_message"`
 }
 
-// LoadQueueConfig loads all the Queue configurations from the JSON file
 func LoadQueueConfig() (*QueueConfig, error) {
 	file, err := os.Open("./configs/queue.json")
 	if err != nil {

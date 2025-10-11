@@ -3,20 +3,29 @@ package handlers
 import (
 	"fmt"
 	"log"
+	"net"
 	"strconv"
+	"sync"
 	"time"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/agent"
 	"github.com/Reverse-Call-Center/virtual-call-center/audio"
 	"github.com/Reverse-Call-Center/virtual-call-center/config"
+	"github.com/Reverse-Call-Center/virtual-call-center/session"
 	"github.com/Reverse-Call-Center/virtual-call-center/types"
 )
 
 var (
-	ivrConfig   map[int]*config.Ivr
-	queueConfig map[int]*config.Queue
+	ivrConfig    map[int]*config.Ivr
+	queueConfig  map[int]*config.Queue
+	redisManager *session.RedisManager
+	globalConfig *config.Config
 )
 
-func InitializeConfigs() {
+func InitializeConfigs(rm *session.RedisManager, cfg *config.Config) {
+	redisManager = rm
+	globalConfig = cfg
+
 	ivrConfig = make(map[int]*config.Ivr)
 	queueConfig = make(map[int]*config.Queue)
 
@@ -86,12 +95,16 @@ func RouteCallToAction(session *types.CallSession, digit string) {
 		fmt.Printf("Hanging up call %s\n", session.ID)
 		session.Dialog.Hangup(session.Context)
 		session.State = types.StateHangup
+		trackCallState(session)
+		removeCall(session.ID)
 		return
 	}
 
 	for _, ivr := range ivrConfig {
 		if ivr.OptionId == action {
 			session.IVRLevel = action
+			session.State = types.StateIVR
+			trackCallState(session)
 			HandleIVRFlow(session, ivr)
 			return
 		}
@@ -100,6 +113,8 @@ func RouteCallToAction(session *types.CallSession, digit string) {
 	for _, queue := range queueConfig {
 		log.Printf("Checking queue %d for action %d\n", queue.OptionId, action)
 		if queue.OptionId == action {
+			session.State = types.StateQueue
+			trackCallState(session)
 			HandleQueueLogic(session, queue)
 			return
 		}
@@ -108,6 +123,30 @@ func RouteCallToAction(session *types.CallSession, digit string) {
 	fmt.Printf("No action found for action %d\n", action)
 	audio.PlayAudioFile(session, currentIVR.InvalidOptionMessage)
 	HandleIVRFlow(session, currentIVR)
+}
+
+func HandleAgentFlow(session *types.CallSession, cfg *config.Config) {
+	startPort := 40000
+
+	session.State = types.StateAgent
+	trackCallState(session)
+
+	conn := agent.StartAgentServer(&net.UDPAddr{
+		IP:   net.ParseIP("0.0.0.0"),
+		Port: startPort,
+	}, session, cfg)
+
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+		session.State = types.StateQueue
+		trackCallState(session)
+		RouteCallToAction(session, "2000")
+	}()
+
+	session.State = types.StateAgent
+	fmt.Printf("Call %s connected to agent\n", session.ID)
 }
 
 func HandleIVRFlow(session *types.CallSession, ivrConfig *config.Ivr) {
@@ -225,13 +264,16 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 	fmt.Printf("Entering queue %d for call %s\n", queueConfig.OptionId, session.ID)
 	session.State = types.StateQueue
 	session.QueueID = queueConfig.OptionId
+	trackCallState(session)
 
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
 
 	holdMusicDone := make(chan struct{})
+	var holdMusicOnce sync.Once
+
 	go func() {
-		defer close(holdMusicDone)
+		defer holdMusicOnce.Do(func() { close(holdMusicDone) })
 		lastAnnounceTime := time.Now()
 
 		for {
@@ -243,16 +285,21 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 			default:
 				if time.Since(lastAnnounceTime) >= time.Duration(queueConfig.AnnounceTime)*time.Second {
 					fmt.Printf("Playing announcement for call %s in queue %d\n", session.ID, queueConfig.OptionId)
-					if err := audio.PlayAudioFile(session, queueConfig.AnnounceMessage); err != nil {
+					if err := audio.PlayAudioFileInterruptible(session, queueConfig.AnnounceMessage, holdMusicDone); err != nil {
 						fmt.Printf("Error playing announce message for call %s: %v\n", session.ID, err)
 					}
 					lastAnnounceTime = time.Now()
 					time.Sleep(500 * time.Millisecond)
 				}
 
-				if err := audio.PlayAudioFile(session, queueConfig.HoldMusic); err != nil {
-					fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+				select {
+				case <-holdMusicDone:
 					return
+				default:
+					if err := audio.PlayAudioFileInterruptible(session, queueConfig.HoldMusic, holdMusicDone); err != nil {
+						fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+						return
+					}
 				}
 			}
 		}
@@ -262,12 +309,49 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 
 	select {
 	case <-queueTimer.C:
-		fmt.Printf("Agent available for call %s\n", session.ID)
-		session.State = types.StateConnected
-		audio.PlayAudioFile(session, "ringing.wav")
+		holdMusicOnce.Do(func() { close(holdMusicDone) })
+		fmt.Printf("Queue timeout for call %s\n", session.ID)
+
+		if queueConfig.TimeoutMessage != "" {
+			audio.PlayAudioFile(session, queueConfig.TimeoutMessage)
+		}
+
+		if queueConfig.TimeoutAction == 0 {
+			fmt.Printf("Hanging up call %s due to queue timeout\n", session.ID)
+			session.Dialog.Hangup(session.Context)
+			session.State = types.StateHangup
+			trackCallState(session)
+			removeCall(session.ID)
+		} else {
+			RouteCallToAction(session, strconv.Itoa(queueConfig.TimeoutAction))
+		}
+
+	case <-session.AgentAvailable:
+		holdMusicOnce.Do(func() { close(holdMusicDone) })
+		fmt.Printf("Agent answered call %s, transitioning to agent mode\n", session.ID)
+		session.State = types.StateAgent
+		trackCallState(session)
+
+		fmt.Printf("Audio routing for call %s is managed by agent UDP server\n", session.ID)
+
+		fmt.Printf("Call %s now in agent mode, waiting for completion\n", session.ID)
+		<-session.Context.Done()
+		fmt.Printf("Agent call %s completed\n", session.ID)
+		return
+
+	case <-holdMusicDone:
+		fmt.Printf("Hold music ended for call %s, call likely disconnected\n", session.ID)
+		session.State = types.StateHangup
+		trackCallState(session)
+		removeCall(session.ID)
+		return
 
 	case <-session.Context.Done():
+		holdMusicOnce.Do(func() { close(holdMusicDone) })
 		fmt.Printf("Call %s context cancelled while in queue\n", session.ID)
+		session.State = types.StateHangup
+		trackCallState(session)
+		removeCall(session.ID)
 		return
 	}
 }
@@ -275,4 +359,20 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 func GetIVRConfig(optionId int) (*config.Ivr, bool) {
 	ivr, exists := ivrConfig[optionId]
 	return ivr, exists
+}
+
+func trackCallState(callSession *types.CallSession) {
+	if redisManager != nil {
+		if err := redisManager.UpdateCallState(callSession); err != nil {
+			log.Printf("Error tracking call state: %v", err)
+		}
+	}
+}
+
+func removeCall(callID string) {
+	if redisManager != nil {
+		if err := redisManager.RemoveCall(callID); err != nil {
+			log.Printf("Error removing call from tracking: %v", err)
+		}
+	}
 }

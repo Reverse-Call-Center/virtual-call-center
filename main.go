@@ -11,23 +11,45 @@ import (
 	"github.com/Reverse-Call-Center/virtual-call-center/config"
 	"github.com/Reverse-Call-Center/virtual-call-center/handlers"
 	"github.com/Reverse-Call-Center/virtual-call-center/server"
+	"github.com/Reverse-Call-Center/virtual-call-center/session"
 )
+
+var Config *config.Config
+var RedisManager *session.RedisManager
+
+func GetConfig() *config.Config {
+	return Config
+}
+
+func GetRedisManager() *session.RedisManager {
+	return RedisManager
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	fmt.Println("Virtual Call Center Starting...")
-	config, err := config.LoadConfig()
+	Config, err := config.LoadConfig()
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
-	handlers.InitializeConfigs()
+	RedisManager = session.NewRedisManager(Config)
+	if RedisManager != nil {
+		defer RedisManager.Close()
+		session.SetRedisManager(RedisManager)
+		if err := RedisManager.PurgeCalls(); err != nil {
+			fmt.Printf("Error purging Redis calls: %v\n", err)
+		}
+	}
 
-	server.StartSIPServer(ctx, config, func() {
-		go startHealthCheckServer(config.SIPPort + 1)
+	handlers.InitializeConfigs(RedisManager, Config)
+
+	server.StartSIPServer(ctx, Config, func() {
+		go startHealthCheckServer(Config.SIPPort + 1)
+		go server.StartHTTPServer(fmt.Sprintf(":%d", Config.ServicePort), Config)
 	})
 }
 

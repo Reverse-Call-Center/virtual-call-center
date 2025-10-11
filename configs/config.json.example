@@ -1,8 +1,13 @@
 {
     "sip_protocol": "udp",
     "sip_port": 5060,
-    "sip_host": "127.0.0.1"
+    "pbx_listen_address": "127.0.0.1",
+    "service_port": 8080,
     "initial_option_id": 1000,
     "record_disclaimer_message": "disclaimer.wav",
-    "log_phone_numbers": false
+    "log_phone_numbers": false,
+    "rtp_initial_port": 40000,
+    "agent_address": "127.0.0.1",
+    "agent_port": 6000,
+    "redis_address": "192.168.1.10:6379"
 }
